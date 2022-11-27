@@ -4,7 +4,7 @@ use assert_float_eq::*;
 use json::JsonValue;
 use phf::{phf_map, Map};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub struct Grenade {
     from: String,
     to: String,
@@ -103,6 +103,14 @@ impl Grenade {
 
         Ok(grenade)
     }
+    
+    fn make_name(&self) -> String {
+        if self.description.is_empty() {
+            self.to.to_string()
+        } else {
+            format!("{} ({})", self.to, self.description)
+        }
+    }
 
     pub fn to_mono(&self) -> Result<JsonValue, String> {
         if self.run_speed {
@@ -124,12 +132,8 @@ impl Grenade {
         if self.recovery_jump {
             r.push('j');
         }
-        let mut name = self.to.clone();
-        if !self.description.is_empty() {
-            name.push_str(&format!(" ({})", self.description));
-        }
         Ok(json::object! {
-            n: name,
+            n: self.make_name(),
             x: self.x,
             y: self.y,
             z: self.z,
@@ -143,6 +147,56 @@ impl Grenade {
             r: r,
         })
     }
+    
+    pub fn to_prim(&self) -> Result<JsonValue, String> {
+        if self.run == 0 {
+            return Err("Nades that aren't thrown while running are not supported by primo".to_owned());
+        }
+        if self.run_speed {
+            return Err("Run speed (shift) is not supported by primo".to_owned());
+        }
+        if self.jump && self.delay == 0 {
+            return Err("Jumping without delay is not supported by primo".to_owned());
+        }
+        if self.duck {
+            return Err("Ducking is not supported by primo".to_owned());
+        }
+        let throw_delay = if self.delay == 0 {
+            self.run
+        } else {
+            self.run + self.delay as i32 - 1
+        };
+        Ok(json::object! {
+            angle: json::object! {
+                x: self.pitch,
+                y: self.yaw,
+            },
+            availability: self.get_availability()?,
+            "delay throw ticks": throw_delay, 
+            "jump throw": self.jump,
+            "jump throw delay ticks": self.run,
+            name: self.make_name(),
+            pos: json::object! {
+                x: self.x,
+                y: self.y,
+                z: self.z,
+            },
+            "run direction": Grenade::normalize_yaw(self.yaw + self.run_yaw),
+            "run ticks": self.run,
+            "throw strength": self.strength * 100.0, 
+        })
+    }
+    
+    fn normalize_yaw(yaw: f32) -> f32 {
+        let mut yaw = yaw;
+        while yaw < 0.0 {
+            yaw += 360.0;
+        }
+        while yaw >= 360.0 {
+            yaw -= 360.0;
+        }
+        yaw
+    }
 
     fn yaw_to_direction(&self, yaw: f32) -> Result<&str, String> {
         Ok(*match YAW_TO_DIRECTION.get(&(yaw as i32)) {
@@ -152,25 +206,49 @@ impl Grenade {
             Some(dir) => dir,
         })
     }
+    
+    fn get_availability(&self) -> Result<JsonValue, String> {
+        let fire = self.weapon == "weapon_molotov" || self.weapon == "weapon_incgrenade";
+        let explosive = self.weapon == "weapon_hegrenade";
+        let smoke = self.weapon == "weapon_smokegrenade";
+        let flash = self.weapon == "weapon_flashbang";
+        if !fire && !explosive && !smoke && !flash {
+            Err(format!("Unknown weapon: {}", self.weapon))
+        } else {
+            Ok(json::object! {
+                fire: fire,
+                explosive: explosive,
+                smoke: smoke,
+                flash: flash,
+            })    
+        }
+    }
 }
 
 pub fn read_gs_json(data: &str) -> HashMap<String, Vec<Grenade>> {
     let in_json = json::parse(data).unwrap();
     let mut nades_map: HashMap<String, Vec<Grenade>> = HashMap::new();
     for (map, nades) in in_json.entries() {
-        nades_map.insert(map.to_owned(), vec![]);
+        let mut new_nades = vec![];
         for nade in nades.members() {
             let grenade = Grenade::from_gs_json(nade);
             match grenade {
                 Ok(grenade) => {
-                    nades_map.get_mut(map).unwrap().push(grenade);
+                    new_nades.push(grenade);
                 }
                 Err(err) => {
                     println!("Error: {}", err);
                 }
             }
         }
-        println!("Map: {}, nades: {}", map, nades_map[map].len());
+        let mut deduplicated_nades = vec![];
+        for nade in new_nades {
+            if !deduplicated_nades.contains(&nade) {
+                deduplicated_nades.push(nade);
+            }
+        }
+        println!("Map: {}, nades: {}", map, deduplicated_nades.len());
+        nades_map.insert(map.to_owned(), deduplicated_nades);
     }
     let total_nades: usize = nades_map.values().map(|v| v.len()).sum();
     println!("Nades read: {}", total_nades);
@@ -187,7 +265,7 @@ mod tests {
     #[test]
     fn parsing() {
         let test_gs_nade = object! {
-                    "name": ["T Roof", "Scaffolding Box"], // array of from and to, alternatively a single string
+            "name": ["T Roof", "Scaffolding Box"], // array of from and to, alternatively a single string
             "description": "Jump on the left box for a good one-way", //optionally, a description can be given
             "weapon": "weapon_smokegrenade", // weapon console name
             "position": [691.63653564453, -1130.1051025391, -127.96875], // origin
