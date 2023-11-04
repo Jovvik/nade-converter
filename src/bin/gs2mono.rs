@@ -33,7 +33,7 @@ fn main() {
         let mut weapon_map: HashMap<String, Vec<JsonValue>> = HashMap::new();
         for nade in nades {
             let mono_weapon_name = ITEMINDEX_TO_MONO.get(&nade.weapon);
-            if None == mono_weapon_name {
+            if mono_weapon_name.is_none() {
                 // println!("Unknown weapon name {}", nade.weapon);
                 continue;
             }
@@ -42,7 +42,7 @@ fn main() {
                 Ok(nade_json) => {
                     weapon_map
                         .entry(mono_weapon_name.to_owned().to_owned())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(nade_json);
                 }
                 Err(e) => println!("Error coverting to mono: {}", e),
