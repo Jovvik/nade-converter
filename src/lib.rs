@@ -1,6 +1,5 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
-use assert_float_eq::*;
 use json::JsonValue;
 use phf::{phf_map, Map};
 
@@ -39,6 +38,22 @@ static YAW_TO_DIRECTION: Map<i32, &'static str> = phf_map! {
     -90i32 => "l",
     -180i32 => "b"
 };
+
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub enum KiduaError {
+    Run,
+    Delay,
+    Weapon(String),
+}
+impl Display for KiduaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KiduaError::Run => write!(f, "Run is not supported"),
+            KiduaError::Delay => write!(f, "Delay is not supported"),
+            KiduaError::Weapon(w) => write!(f, "Weapon {} is not supported", w),
+        }
+    }
+}
 
 impl Grenade {
     fn new() -> Grenade {
@@ -103,7 +118,7 @@ impl Grenade {
 
         Ok(grenade)
     }
-    
+
     fn make_name(&self) -> String {
         if self.description.is_empty() {
             self.to.to_string()
@@ -147,10 +162,12 @@ impl Grenade {
             r: r,
         })
     }
-    
+
     pub fn to_prim(&self) -> Result<JsonValue, String> {
         if self.run == 0 {
-            return Err("Nades that aren't thrown while running are not supported by primo".to_owned());
+            return Err(
+                "Nades that aren't thrown while running are not supported by primo".to_owned(),
+            );
         }
         if self.run_speed {
             return Err("Run speed (shift) is not supported by primo".to_owned());
@@ -172,7 +189,7 @@ impl Grenade {
                 y: self.yaw,
             },
             availability: self.get_availability()?,
-            "delay throw ticks": throw_delay, 
+            "delay throw ticks": throw_delay,
             "jump throw": self.jump,
             "jump throw delay ticks": self.run,
             name: self.make_name(),
@@ -183,10 +200,54 @@ impl Grenade {
             },
             "run direction": Grenade::normalize_yaw(self.yaw + self.run_yaw),
             "run ticks": self.run,
-            "throw strength": self.strength * 100.0, 
+            "throw strength": self.strength * 100.0,
         })
     }
-    
+
+    pub fn to_kidua(&self) -> Result<JsonValue, KiduaError> {
+        if self.run != 0 {
+            return Err(KiduaError::Run);
+        }
+        if self.delay != 0 {
+            return Err(KiduaError::Delay);
+        }
+        let weapon_index = [
+            "weapon_flashbang",
+            "weapon_hegrenade",
+            "weapon_smokegrenade",
+            "weapon_molotov",
+        ]
+        .iter()
+        .position(|&w| w == self.weapon)
+        .ok_or_else(|| KiduaError::Weapon(self.weapon.clone()))?;
+        let mut description = vec![];
+        if self.jump {
+            description.push("jump");
+        }
+        if self.duck {
+            description.push("duck");
+        }
+        if self.strength == 0.0 {
+            description.push("right");
+        } else if self.strength == 0.5 {
+            description.push("right+left");
+        }
+        Ok(json::object! {
+            "spot": self.make_name(),
+            "origin": json::object! {
+                "x": self.x,
+                "y": self.y,
+                "z": self.z,
+            },
+            "view": json::object! {
+                "x": self.pitch,
+                "y": self.yaw,
+                "z": 0
+            },
+            "nade": weapon_index,
+        })
+    }
+
     fn normalize_yaw(yaw: f32) -> f32 {
         let mut yaw = yaw;
         while yaw < 0.0 {
@@ -206,7 +267,7 @@ impl Grenade {
             Some(dir) => dir,
         })
     }
-    
+
     fn get_availability(&self) -> Result<JsonValue, String> {
         let fire = self.weapon == "weapon_molotov" || self.weapon == "weapon_incgrenade";
         let explosive = self.weapon == "weapon_hegrenade";
@@ -220,7 +281,7 @@ impl Grenade {
                 explosive: explosive,
                 smoke: smoke,
                 flash: flash,
-            })    
+            })
         }
     }
 }
